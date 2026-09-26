@@ -17,7 +17,7 @@ pytestmark = pytest.mark.skipif(not os.getenv("TEST_DATABASE_URL"), reason="Requ
 def test_workspace_document_isolation_and_roles(monkeypatch):
     from app.api.routes import documents as routes
     monkeypatch.setattr(routes, "enqueue_document", lambda _id: None)
-    email_a, email_b = f"a-{uuid4()}@example.test", f"b-{uuid4()}@example.test"
+    email_a, email_b = f"a-{uuid4()}@example.com", f"b-{uuid4()}@example.com"
     with SessionLocal.begin() as db:
         a, b = Workspace(name="A"), Workspace(name="B")
         db.add_all([a, b]); db.flush()
