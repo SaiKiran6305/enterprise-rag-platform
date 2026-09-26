@@ -1,24 +1,13 @@
 from fastapi.testclient import TestClient
-
 from app.main import app
 
 
-client = TestClient(app)
+def test_health_and_docs():
+    client = TestClient(app)
+    assert client.get("/health").json() == {"status": "healthy"}
+    assert client.get("/api/v1/health").status_code == 200
+    assert client.get("/docs").status_code == 200
 
 
-def test_health_check():
-    response = client.get("/health")
-
-    assert response.status_code == 200
-    assert response.json() == {"status": "healthy"}
-
-def test_root():
-    response = client.get("/")
-
-    assert response.status_code == 200
-
-    data = response.json()
-
-    assert data["application"] == "Enterprise Knowledge AI Assistant"
-    assert data["version"] == "0.1.0"
-    assert data["environment"] == "development"
+def test_documents_requires_authentication():
+    assert TestClient(app).get("/api/v1/documents").status_code == 401

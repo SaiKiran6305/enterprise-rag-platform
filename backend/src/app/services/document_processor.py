@@ -1,159 +1,52 @@
-from dataclasses import dataclass
-from pathlib import Path
+"""Idempotent document processing in a separate RQ worker."""
+import logging
 from uuid import UUID
 
-from sqlalchemy.orm import Session
+from sqlalchemy import select
 
-from app.core.config import Settings
+from app.core.config import get_settings
+from app.core.database import SessionLocal
 from app.models.document import Document, DocumentStatus
-from app.models.document_chunk import DocumentChunk
-from app.repositories.document import get_document_by_id
-from app.repositories.document_chunk import replace_document_chunks
+from app.models.document_chunk import DocumentChunk, EMBEDDING_DIMENSION
+from app.services.ai import OpenAIProvider
 from app.services.pdf_extractor import extract_pdf_pages
 from app.services.text_chunker import chunk_extracted_pages
 
-import logging
-
-
 logger = logging.getLogger(__name__)
 
-@dataclass(frozen=True)
-class ProcessingResult:
-    document_id: UUID
-    status: DocumentStatus
-    pages_extracted: int
-    chunks_created: int
 
-
-class DocumentNotFoundError(Exception):
-    pass
-
-
-class StoredDocumentNotFoundError(Exception):
-    pass
-
-
-class DocumentProcessingError(Exception):
-    pass
-
-
-def process_document(
-    *,
-    document_id: UUID,
-    db: Session,
-    settings: Settings,
-) -> ProcessingResult:
-    document = get_document_by_id(
-        db=db,
-        document_id=document_id,
-    )
-
-    if document is None:
-        raise DocumentNotFoundError(
-            "Document not found"
-        )
-
-    pdf_path = (
-        settings.upload_directory
-        / document.stored_filename
-    )
-
-    if not pdf_path.exists():
-        raise StoredDocumentNotFoundError(
-            "The stored PDF file could not be found"
-        )
-
-    document.status = DocumentStatus.PROCESSING
-    document.error_message = None
-
-    db.commit()
-
-    try:
-        extracted_pages = extract_pdf_pages(pdf_path)
-
-        text_chunks = chunk_extracted_pages(
-            extracted_pages
-        )
-
-        if not text_chunks:
-            raise DocumentProcessingError(
-                "No chunks could be created from the PDF"
-            )
-
-        database_chunks = [
-            DocumentChunk(
-                document_id=document.id,
-                page_number=text_chunk.page_number,
-                chunk_index=text_chunk.chunk_index,
-                content=text_chunk.content,
-                section_title=None,
-                token_count=None,
-                embedding=None,
-            )
-            for text_chunk in text_chunks
-        ]
-
-        replace_document_chunks(
-            db,
-            document_id=document.id,
-            chunks=database_chunks,
-        )
-
-        document.status = DocumentStatus.READY
+def process_document(document_id: str) -> None:
+    settings = get_settings()
+    with SessionLocal() as db:
+        document = db.scalar(select(Document).where(Document.id == UUID(document_id)).with_for_update(skip_locked=True))
+        if document is None or document.status in (DocumentStatus.READY, DocumentStatus.PROCESSING):
+            return
+        document.status = DocumentStatus.PROCESSING
         document.error_message = None
-
+        stored_filename = document.stored_filename
         db.commit()
-
-        return ProcessingResult(
-            document_id=document.id,
-            status=document.status,
-            pages_extracted=len(extracted_pages),
-            chunks_created=len(database_chunks),
-        )
-
-    except Exception as error:
-        db.rollback()
-
-        failed_document = get_document_by_id(
-            db=db,
-            document_id=document_id,
-        )
-
-        if failed_document is not None:
-            failed_document.status = DocumentStatus.FAILED
-            failed_document.error_message = str(error)[:1000]
+        try:
+            pages = extract_pdf_pages(settings.upload_directory / stored_filename)
+            chunks = chunk_extracted_pages(pages)
+            if not chunks:
+                raise ValueError("No extractable text in PDF")
+            embeddings = OpenAIProvider(settings, document.workspace_id).embed_documents([c.content for c in chunks])
+            if len(embeddings) != len(chunks) or any(len(e) != EMBEDDING_DIMENSION for e in embeddings):
+                raise ValueError("Embedding response has an unexpected shape")
+            document = db.get(Document, UUID(document_id))
+            if document is None:
+                return
+            db.query(DocumentChunk).filter(DocumentChunk.document_id == document.id).delete()
+            db.add_all(DocumentChunk(document_id=document.id, page_number=c.page_number, chunk_index=c.chunk_index, content=c.content, section_title=None, token_count=c.token_count, embedding=e) for c, e in zip(chunks, embeddings))
+            document.status = DocumentStatus.READY
             db.commit()
-
-        if isinstance(error, DocumentProcessingError):
+            logger.info("Processed document %s: %s chunks", document_id, len(chunks))
+        except Exception:
+            db.rollback()
+            logger.exception("Processing failed for %s", document_id)
+            document = db.get(Document, UUID(document_id))
+            if document:
+                document.status = DocumentStatus.FAILED
+                document.error_message = "Processing failed. Check worker logs or retry."
+                db.commit()
             raise
-
-        raise DocumentProcessingError(
-            f"Document processing failed: {error}"
-        ) from error
-    
-    except Exception as error:
-        db.rollback()
-
-        logger.exception(
-            "Processing failed for document %s",
-            document_id,
-        )
-
-        failed_document = get_document_by_id(
-            db=db,
-            document_id=document_id,
-        )
-
-        if failed_document is not None:
-            failed_document.status = DocumentStatus.FAILED
-            failed_document.error_message = (
-                "Document processing failed"
-            )
-            db.commit()
-
-        if isinstance(error, DocumentProcessingError):
-            raise
-
-        raise DocumentProcessingError(
-            "Document processing failed"
-        ) from error

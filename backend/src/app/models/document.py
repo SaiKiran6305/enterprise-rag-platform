@@ -3,11 +3,10 @@ from enum import Enum
 from uuid import UUID, uuid4
 from typing import TYPE_CHECKING
 
-from sqlalchemy import BigInteger, DateTime
+from sqlalchemy import BigInteger, DateTime, ForeignKey, UniqueConstraint
 from sqlalchemy import Enum as SqlEnum
 from sqlalchemy import String, Text, func
 from sqlalchemy.dialects.postgresql import UUID as PostgreSQLUUID
-from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base
@@ -24,12 +23,15 @@ class DocumentStatus(str, Enum):
 
 class Document(Base):
     __tablename__ = "documents"
+    __table_args__ = (UniqueConstraint("workspace_id", "content_hash", name="uq_document_workspace_hash"),)
 
     id: Mapped[UUID] = mapped_column(
         PostgreSQLUUID(as_uuid=True),
         primary_key=True,
         default=uuid4,
     )
+    workspace_id: Mapped[UUID] = mapped_column(PostgreSQLUUID(as_uuid=True), ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False, index=True)
+    owner_id: Mapped[UUID] = mapped_column(PostgreSQLUUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
 
     original_filename: Mapped[str] = mapped_column(
         String(255),
@@ -91,7 +93,5 @@ class Document(Base):
     )
     
     content_hash: Mapped[str | None] = mapped_column(
-    String(64),
-    nullable=True,
-    unique=True,
+        String(64), nullable=True,
     )

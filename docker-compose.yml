@@ -1,0 +1,72 @@
+services:
+  db:
+    image: pgvector/pgvector:0.8.6-pg17-bookworm
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?Set POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:?Set POSTGRES_DB}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+  redis:
+    image: redis:7.4-alpine
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory", "256mb", "--maxmemory-policy", "noeviction"]
+    volumes: ["redis_data:/data"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+  api:
+    build: ./backend
+    environment: &backend_env
+      ENVIRONMENT: production
+      DEBUG: "false"
+      COOKIE_SECURE: "true"
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+      REDIS_URL: redis://redis:6379/0
+      OPENAI_API_KEY: ${OPENAI_API_KEY:?Set OPENAI_API_KEY}
+      JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET}
+      UPLOAD_DIRECTORY: /app/storage/uploads
+    command: ["sh", "-c", "alembic -c src/app/alembic.ini upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000 --proxy-headers --forwarded-allow-ips='*'"]
+    volumes: ["uploads:/app/storage/uploads"]
+    depends_on:
+      db: {condition: service_healthy}
+      redis: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/v1/health',timeout=2)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+  worker:
+    build: ./backend
+    environment: *backend_env
+    command: ["python", "-m", "app.worker"]
+    volumes: ["uploads:/app/storage/uploads"]
+    depends_on:
+      api: {condition: service_healthy}
+    restart: unless-stopped
+  web:
+    build: ./frontend
+    environment:
+      DOMAIN: ${DOMAIN:?Set DOMAIN}
+    ports: ["80:80", "443:443"]
+    volumes:
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      api: {condition: service_healthy}
+    restart: unless-stopped
+volumes:
+  postgres_data:
+  redis_data:
+  uploads:
+  caddy_data:
+  caddy_config:

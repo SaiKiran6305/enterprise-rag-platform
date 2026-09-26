@@ -1,6 +1,5 @@
-from pathlib import Path
-from uuid import uuid4
 from hashlib import sha256
+from pathlib import Path
 from uuid import UUID, uuid4
 
 from fastapi import UploadFile
@@ -8,8 +7,6 @@ from sqlalchemy.orm import Session
 
 from app.core.config import Settings
 from app.models.document import Document
-from app.repositories.document import create_document
-
 from app.repositories.document import (
     create_document,
     get_document_by_content_hash,
@@ -37,6 +34,8 @@ def store_uploaded_pdf(
     file: UploadFile,
     db: Session,
     settings: Settings,
+    workspace_id: UUID,
+    owner_id: UUID,
 ) -> Document:
     if not file.filename:
         raise InvalidDocumentError(
@@ -51,6 +50,8 @@ def store_uploaded_pdf(
     original_filename = Path(
         normalized_filename
     ).name
+    if len(original_filename) > 255:
+        raise InvalidDocumentError("Filename is too long")
 
     if Path(original_filename).suffix.lower() != ".pdf":
         raise InvalidDocumentError(
@@ -105,10 +106,13 @@ def store_uploaded_pdf(
                 output_file.write(chunk)
 
         content_hash = content_hasher.hexdigest()
+        if total_bytes == 0:
+            raise InvalidDocumentError("The PDF is empty")
 
         existing_document = get_document_by_content_hash(
             db,
             content_hash=content_hash,
+            workspace_id=workspace_id,
         )
 
         if existing_document is not None:
@@ -126,6 +130,8 @@ def store_uploaded_pdf(
             ),
             file_size=total_bytes,
             content_hash=content_hash,
+            workspace_id=workspace_id,
+            owner_id=owner_id,
         )
 
         return document
