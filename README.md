@@ -17,7 +17,7 @@ The answer service returns a refusal if no relevant chunks are found, if the mod
 
 Requirements: Python 3.12, [uv](https://docs.astral.sh/uv/), Node 24, Docker Compose, an OpenAI API key.
 
-1. Copy `.env.example` to `.env` in the project root. Set a long random database password, `JWT_SECRET` (at least 32 random characters), your API key, and a domain for deployment. Do not commit `.env`.
+1. Copy `.env.example` to `.env` in the project root. Set a long random alphanumeric database password (it is interpolated into a database URL), `JWT_SECRET` (at least 32 random characters), your API key, and a domain for deployment. Do not commit `.env`.
 2. Start dependencies: `docker compose up -d db redis`.
 3. Copy `backend/.env.example` to `backend/.env`, set the same database password and an API key, and set a local JWT secret. The local example uses `localhost` for PostgreSQL and Redis. The production compose injects separate container addresses.
 4. In `backend/`, run `uv sync` then `uv run alembic -c src/app/alembic.ini upgrade head`.
